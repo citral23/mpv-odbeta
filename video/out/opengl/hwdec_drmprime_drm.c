@@ -262,7 +262,7 @@ static int init(struct ra_hwdec *hw)
     drm_params = ra_get_native_resource(hw->ra, "drm_params_v2");
     if (drm_params) {
         p->ctx = drm_atomic_create_context(p->log, drm_params->fd, drm_params->crtc_id,
-                                           drm_params->connector_id, draw_plane, drmprime_video_plane);
+                                           drm_params->connector_id, 0, draw_plane, drmprime_video_plane);
         if (!p->ctx) {
             mp_err(p->log, "Failed to retrieve DRM atomic context.\n");
             goto err;

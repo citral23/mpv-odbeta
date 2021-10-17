@@ -49,6 +49,7 @@ struct drm_opts {
     char *drm_connector_spec;
     char *drm_mode_spec;
     int drm_atomic;
+    int drm_disable_plane;
     int drm_draw_plane;
     int drm_drmprime_video_plane;
     int drm_format;
@@ -80,7 +81,7 @@ void vt_switcher_release(struct vt_switcher *s, void (*handler)(void*),
                          void *user_data);
 
 struct kms *kms_create(struct mp_log *log, const char *connector_spec,
-                       const char *mode_spec,
+                       const char *mode_spec, int disable_plane,
                        int draw_plane, int drmprime_video_plane,
                        bool use_atomic);
 void kms_destroy(struct kms *kms);

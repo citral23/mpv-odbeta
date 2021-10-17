@@ -78,6 +78,7 @@ const struct m_sub_options drm_conf = {
         {"drm-mode", OPT_STRING_VALIDATE(drm_mode_spec, drm_validate_mode_opt),
             .help = drm_mode_opt_help},
         {"drm-atomic", OPT_CHOICE(drm_atomic, {"no", 0}, {"auto", 1})},
+        {"drm-disable-plane", OPT_INT(drm_disable_plane)},
         {"drm-draw-plane", OPT_CHOICE(drm_draw_plane,
             {"primary", DRM_OPTS_PRIMARY_PLANE},
             {"overlay", DRM_OPTS_OVERLAY_PLANE}),
@@ -99,6 +100,7 @@ const struct m_sub_options drm_conf = {
     .defaults = &(const struct drm_opts) {
         .drm_mode_spec = "preferred",
         .drm_atomic = 1,
+        .drm_disable_plane = -1,
         .drm_draw_plane = DRM_OPTS_PRIMARY_PLANE,
         .drm_drmprime_video_plane = DRM_OPTS_OVERLAY_PLANE,
     },
@@ -526,7 +528,7 @@ static void parse_connector_spec(struct mp_log *log,
 }
 
 struct kms *kms_create(struct mp_log *log, const char *connector_spec,
-                       const char* mode_spec,
+                       const char* mode_spec, int disable_plane,
                        int draw_plane, int drmprime_video_plane,
                        bool use_atomic)
 {
@@ -593,7 +595,8 @@ struct kms *kms_create(struct mp_log *log, const char *connector_spec,
         mp_verbose(log, "DRM Atomic support found\n");
         kms->atomic_context = drm_atomic_create_context(kms->log, kms->fd, kms->crtc_id,
                                                         kms->connector->connector_id,
-                                                        draw_plane, drmprime_video_plane);
+                                                        disable_plane, draw_plane,
+                                                        drmprime_video_plane);
         if (!kms->atomic_context) {
             mp_err(log, "Failed to create DRM atomic context\n");
             goto err;

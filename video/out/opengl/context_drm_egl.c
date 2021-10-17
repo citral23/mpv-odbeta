@@ -241,7 +241,7 @@ static bool init_gbm(struct ra_ctx *ctx)
 
     MP_VERBOSE(ctx->vo, "Initializing GBM surface (%d x %d)\n",
         p->draw_surface_size.width, p->draw_surface_size.height);
-    p->gbm.surface = gbm_surface_create(
+        p->gbm.surface = gbm_surface_create(
         p->gbm.device,
         p->draw_surface_size.width,
         p->draw_surface_size.height,
@@ -323,6 +323,11 @@ static bool crtc_setup_atomic(struct ra_ctx *ctx)
     if (drm_object_set_property(request, atomic_ctx->crtc, "ACTIVE", 1) < 0) {
         MP_ERR(ctx->vo, "Could not set ACTIVE on crtc\n");
         goto err;
+    }
+
+    if (atomic_ctx->disable_plane) {
+    drm_object_set_property(request, atomic_ctx->disable_plane, "FB_ID", 0);
+    drm_object_set_property(request, atomic_ctx->disable_plane, "CRTC_ID", 0);
     }
 
     drm_object_set_property(request, atomic_ctx->draw_plane, "FB_ID", p->fb->id);
@@ -741,6 +746,7 @@ static bool drm_egl_init(struct ra_ctx *ctx)
     MP_VERBOSE(ctx, "Initializing KMS\n");
     p->kms = kms_create(ctx->log, ctx->vo->opts->drm_opts->drm_connector_spec,
                         ctx->vo->opts->drm_opts->drm_mode_spec,
+                        ctx->vo->opts->drm_opts->drm_disable_plane,
                         ctx->vo->opts->drm_opts->drm_draw_plane,
                         ctx->vo->opts->drm_opts->drm_drmprime_video_plane,
                         ctx->vo->opts->drm_opts->drm_atomic);

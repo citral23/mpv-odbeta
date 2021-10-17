@@ -143,7 +143,7 @@ void drm_object_print_info(struct mp_log *log, struct drm_object *object)
 }
 
 struct drm_atomic_context *drm_atomic_create_context(struct mp_log *log, int fd, int crtc_id,
-                                                     int connector_id,
+                                                     int connector_id, int disable_plane_idx,
                                                      int draw_plane_idx, int drmprime_video_plane_idx)
 {
     drmModePlaneRes *plane_res = NULL;
@@ -234,6 +234,11 @@ struct drm_atomic_context *drm_atomic_create_context(struct mp_log *log, int fd,
                 if ((!overlay_id) && (value == DRM_PLANE_TYPE_OVERLAY))
                     overlay_id = plane_id;
 
+                if (layercount == disable_plane_idx) {
+                    ctx->disable_plane = plane;
+                    continue;
+                }
+
                 if (layercount == draw_plane_idx) {
                     ctx->draw_plane = plane;
                     continue;
@@ -248,6 +253,11 @@ struct drm_atomic_context *drm_atomic_create_context(struct mp_log *log, int fd,
             drm_object_free(plane);
             plane = NULL;
         }
+    }
+
+    if (disable_plane_idx >= 0) {
+	mp_verbose(log, "Disabling plane %d\n", disable_plane_idx);
+	ctx->disable_plane = drm_object_create(log, ctx->fd, ctx->disable_plane->id, DRM_MODE_OBJECT_PLANE);
     }
 
     // draw plane was specified as either of the special options: any primary plane or any overlay plane
@@ -299,6 +309,7 @@ void drm_atomic_destroy_context(struct drm_atomic_context *ctx)
     drm_mode_destroy_blob(ctx->fd, &ctx->old_state.crtc.mode);
     drm_object_free(ctx->crtc);
     drm_object_free(ctx->connector);
+    drm_object_free(ctx->disable_plane);
     drm_object_free(ctx->draw_plane);
     drm_object_free(ctx->drmprime_video_plane);
     talloc_free(ctx);
