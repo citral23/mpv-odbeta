@@ -209,18 +209,109 @@ static void get_vsync(struct vo *vo, struct vo_vsync_info *info)
     *info = p->vsync_info;
 }
 
+static bool crtc_setup_atomic(struct vo *vo)
+{
+    struct priv *p = vo->priv;
+    struct drm_atomic_context *atomic_vo = p->kms->atomic_context;
+
+    if (!drm_atomic_save_old_state(atomic_vo)) {
+        MP_WARN(vo, "Failed to save old DRM atomic state\n");
+    }
+
+    drmModeAtomicReqPtr request = drmModeAtomicAlloc();
+    if (!request) {
+        MP_ERR(vo, "Failed to allocate drm atomic request\n");
+        return false;
+    }
+
+    if (drm_object_set_property(request, atomic_vo->connector, "CRTC_ID", p->kms->crtc_id) < 0) {
+        MP_ERR(vo, "Could not set CRTC_ID on connector\n");
+        return false;
+    }
+
+    if (!drm_mode_ensure_blob(p->kms->fd, &p->kms->mode)) {
+        MP_ERR(vo, "Failed to create DRM mode blob\n");
+        goto err;
+    }
+    if (drm_object_set_property(request, atomic_vo->crtc, "MODE_ID", p->kms->mode.blob_id) < 0) {
+        MP_ERR(vo, "Could not set MODE_ID on crtc\n");
+        goto err;
+    }
+    if (drm_object_set_property(request, atomic_vo->crtc, "ACTIVE", 1) < 0) {
+        MP_ERR(vo, "Could not set ACTIVE on crtc\n");
+        goto err;
+    }
+
+    if (atomic_vo->disable_plane) {
+    drm_object_set_property(request, atomic_vo->disable_plane, "FB_ID", 0);
+    drm_object_set_property(request, atomic_vo->disable_plane, "CRTC_ID", 0);
+    }
+
+    drm_object_set_property(request, atomic_vo->draw_plane, "FB_ID",   p->cur_fb->fb);
+    drm_object_set_property(request, atomic_vo->draw_plane, "CRTC_ID", p->kms->crtc_id);
+    drm_object_set_property(request, atomic_vo->draw_plane, "SRC_X",   0);
+    drm_object_set_property(request, atomic_vo->draw_plane, "SRC_Y",   0);
+    drm_object_set_property(request, atomic_vo->draw_plane, "SRC_W",   p->kms->mode.mode.hdisplay << 16);
+    drm_object_set_property(request, atomic_vo->draw_plane, "SRC_H",   p->kms->mode.mode.vdisplay << 16);
+    drm_object_set_property(request, atomic_vo->draw_plane, "CRTC_X",  0);
+    drm_object_set_property(request, atomic_vo->draw_plane, "CRTC_Y",  0);
+    drm_object_set_property(request, atomic_vo->draw_plane, "CRTC_W",  p->kms->mode.mode.hdisplay);
+    drm_object_set_property(request, atomic_vo->draw_plane, "CRTC_H",  p->kms->mode.mode.vdisplay);
+
+    int ret = drmModeAtomicCommit(p->kms->fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+    if (ret)
+        MP_ERR(vo, "Failed to commit ModeSetting atomic request (%d)\n", ret);
+
+    drmModeAtomicFree(request);
+    return ret == 0;
+
+  err:
+    drmModeAtomicFree(request);
+    return false;
+}
+
+static bool crtc_release_atomic(struct vo *vo)
+{
+    struct priv *p = vo->priv;
+
+    struct drm_atomic_context *atomic_vo = p->kms->atomic_context;
+    drmModeAtomicReqPtr request = drmModeAtomicAlloc();
+    if (!request) {
+        MP_ERR(vo, "Failed to allocate drm atomic request\n");
+        return false;
+    }
+
+    if (!drm_atomic_restore_old_state(request, atomic_vo)) {
+        MP_WARN(vo, "Got error while restoring old state\n");
+    }
+
+    int ret = drmModeAtomicCommit(p->kms->fd, request, DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+
+    if (ret)
+        MP_WARN(vo, "Failed to commit ModeSetting atomic request (%d)\n", ret);
+
+    drmModeAtomicFree(request);
+    return ret == 0;
+}
+
 static bool crtc_setup(struct vo *vo)
 {
     struct priv *p = vo->priv;
     if (p->active)
-        return true;
-    p->old_crtc = drmModeGetCrtc(p->kms->fd, p->kms->crtc_id);
-    int ret = drmModeSetCrtc(p->kms->fd, p->kms->crtc_id,
-                             p->cur_fb->fb,
-                             0, 0, &p->kms->connector->connector_id, 1,
-                             &p->kms->mode.mode);
-    p->active = true;
-    return ret == 0;
+       return true;
+    if (p->kms->atomic_context) {
+        int ret = crtc_setup_atomic(vo);
+        p->active = true;
+        return ret;
+    } else {
+        p->old_crtc = drmModeGetCrtc(p->kms->fd, p->kms->crtc_id);
+        int ret = drmModeSetCrtc(p->kms->fd, p->kms->crtc_id,
+                                 p->cur_fb->fb,
+                                 0, 0, &p->kms->connector->connector_id, 1,
+                                 &p->kms->mode.mode);
+        p->active = true;
+        return ret == 0;
+    }
 }
 
 static void crtc_release(struct vo *vo)
@@ -240,14 +331,21 @@ static void crtc_release(struct vo *vo)
         }
     }
 
-    if (p->old_crtc) {
-        drmModeSetCrtc(p->kms->fd, p->old_crtc->crtc_id,
-                       p->old_crtc->buffer_id,
-                       p->old_crtc->x, p->old_crtc->y,
-                       &p->kms->connector->connector_id, 1,
-                       &p->old_crtc->mode);
-        drmModeFreeCrtc(p->old_crtc);
-        p->old_crtc = NULL;
+    if (p->kms->atomic_context) {
+        if (p->kms->atomic_context->old_state.saved) {
+            if (!crtc_release_atomic(vo))
+                MP_ERR(vo, "Failed to restore previous mode\n");
+        }
+    } else {
+        if (p->old_crtc) {
+            drmModeSetCrtc(p->kms->fd, p->old_crtc->crtc_id,
+                           p->old_crtc->buffer_id,
+                           p->old_crtc->x, p->old_crtc->y,
+                           &p->kms->connector->connector_id, 1,
+                           &p->old_crtc->mode);
+            drmModeFreeCrtc(p->old_crtc);
+            p->old_crtc = NULL;
+        }
     }
 }
 
@@ -339,6 +437,11 @@ static int reconfig(struct vo *vo, struct mp_image_params *params)
     p->vsync_info.last_queue_display_time = -1;
 
     vo->want_redraw = true;
+
+    if (p->kms->atomic_context && !p->kms->atomic_context->request) {
+        p->kms->atomic_context->request = drmModeAtomicAlloc();
+    }
+
     return 0;
 }
 
@@ -485,6 +588,7 @@ static void queue_flip(struct vo *vo, struct kms_frame *frame)
 {
     int ret = 0;
     struct priv *p = vo->priv;
+    struct drm_atomic_context *atomic_vo = p->kms->atomic_context;
 
     p->cur_fb = frame->fb;
 
@@ -496,13 +600,31 @@ static void queue_flip(struct vo *vo, struct kms_frame *frame)
     data->waiting_for_flip = &p->waiting_for_flip;
     data->log = vo->log;
 
-    ret = drmModePageFlip(p->kms->fd, p->kms->crtc_id,
-                          p->cur_fb->fb,
-                          DRM_MODE_PAGE_FLIP_EVENT, data);
-    if (ret) {
-        MP_WARN(vo, "Failed to queue page flip: %s\n", mp_strerror(errno));
+    if (atomic_vo) {
+	drm_object_set_property(atomic_vo->request, atomic_vo->draw_plane, "FB_ID", p->cur_fb->fb);
+        drm_object_set_property(atomic_vo->request, atomic_vo->draw_plane, "CRTC_ID", p->kms->crtc_id);
+        drm_object_set_property(atomic_vo->request, atomic_vo->draw_plane, "ZPOS", 1);
+
+        ret = drmModeAtomicCommit(p->kms->fd, atomic_vo->request,
+                                  DRM_MODE_ATOMIC_NONBLOCK | DRM_MODE_PAGE_FLIP_EVENT, data);
+        if (ret) {
+            MP_WARN(vo, "Failed to commit atomic request (%d)\n", ret);
+            talloc_free(data);
+        }
     } else {
-        p->waiting_for_flip = true;
+        ret = drmModePageFlip(p->kms->fd, p->kms->crtc_id,
+                              p->cur_fb->fb,
+                              DRM_MODE_PAGE_FLIP_EVENT, data);
+        if (ret) {
+            MP_WARN(vo, "Failed to queue page flip: %s\n", mp_strerror(errno));
+            talloc_free(data);
+        } 
+    }
+    p->waiting_for_flip = true;
+
+    if (atomic_vo) {
+        drmModeAtomicFree(atomic_vo->request);
+        atomic_vo->request = drmModeAtomicAlloc();
     }
 }
 
@@ -533,7 +655,7 @@ static void flip_page(struct vo *vo)
 static void uninit(struct vo *vo)
 {
     struct priv *p = vo->priv;
-
+    
     crtc_release(vo);
 
     while (p->fb_queue_len > 0) {
@@ -575,7 +697,10 @@ static int preinit(struct vo *vo)
     p->kms = kms_create(vo->log,
                         vo->opts->drm_opts->drm_connector_spec,
                         vo->opts->drm_opts->drm_mode_spec,
-                        0, 0, 0, false);
+                        vo->opts->drm_opts->drm_disable_plane,
+                        vo->opts->drm_opts->drm_draw_plane,
+                        0,
+                        true);
     if (!p->kms) {
         MP_ERR(vo, "Failed to create KMS.\n");
         goto err;
